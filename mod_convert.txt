@@ -1,0 +1,92 @@
+mod_convert takes a standard 15 or 31 channel Amiga .mod file and converts it
+to one of three formats suitable for playback on a 4.77MHz 8088 machine (cycle
+exact with an IBM 5150/5155/5160).
+
+The three formats are codenamed VIC, SID and Paula (as a rough indication of
+their relative capabilities).
+
+All three players have a limitation on total sample data of 64kB. Increasing
+the size of the sample table is is possible by concatenating multiple songs
+with separate sample data tables but disk space constraints proscribe this for
+our demo. On exit, the converter will output the amount of space used - if it
+is over 64kB then the song needs to be simplified by reducing the number of
+instruments, amplitudes and (in the case of VIC) frequencies used.
+
+
+0: VIC
+
+VIC takes 6-61% of CPU time depending on register usage of the other running
+code, and is used with routines where the CPU is synchronized to the video
+raster. It is a single voice player, outputting samples at the rate of 15.7kHz
+(3281250/209) or one per scanline. The PWM carrier frequency is not expected
+to be audible as the monitor's horizontal frequency is the same (and with a
+constant phase relationship).
+
+The samples have values between 1 and 76 inclusive (a dynamic range of
+~6.2 bits). Once per frame at the rate of 60Hz (1640625/27379, every 262
+samples) a new sample pointer is loaded. This means that if we play our entire
+sample table through once it would last for about 4.2 seconds of audio.
+
+As both the frequency and volume are "baked in" to the sample data, each
+combination of instrment, waveform and volume will take up space in the sample
+table. Each such combination takes at least 262 bytes (usually more in order
+that the player can start the sample at all required phases). To conserve
+sample table space, it is recommended to use samples that repeat and which
+contain one oscillation (i.e. one high and one low period of the fundamental)
+per repeat time. Thus, this player is oriented more towards "chip tunes" than
+more conventional tracked music.
+
+Longer samples can be used (especially if only played at a single frequency
+and amplitude) but take up sample space proportionally.
+
+As a rough guide, there should be space to for about 200 combinations of
+instrument, frequency and volume. That could be 4 instruments each at 16
+frequencies each at 3 different volumes.
+
+When targetting this player, mod_convert will play back the mod using vblank
+(as opposed to CIA) timer mode with a tick rate of 60Hz (20% faster than a
+normal PAL mod).
+
+Multiple channels are emulated using arpeggios. If more than one channel is
+active then the player will alternate between them. If one of these channels
+is using the mod format's built-in arpeggio (effect 0) then that arpeggio
+will be slower (e.g. if all four channels are playing then an arpeggio will
+take 12 ticks instead of 3 to play all its notes).
+
+
+1: SID
+
+SID takes almost 100% of CPU (leaving only enough time for a very small amount
+of video updates such as a slow scroller). The current version of the player
+has an inner loop of 288 CPU cycles, giving a playback frequency of 16.6kHz
+but reducing the dynamic range slightly.
+
+Unlike VIC, frequencies are not baked into the samples. The table for this
+player consists of 256 samples of 256 bytes each. Even more so than with VIC,
+the player is designed so that the each sample covers one oscillation. In this
+case the frequency range is 0 to 8.3kHz with a frequency resolution of 0.25Hz.
+Volume is baked into the samples, so a table might consist of 16 different
+instruments each at 16 different amplitudes, or 32 instruments at 8
+amplitudes. Not all instruments need to have the same range of amplitudes -
+the converter will allocate the space depending on which amplitudes and
+instruments actually get used.
+
+This is a true 4-channel player, so all four channels of the mod can be used.
+
+
+2: Paula
+
+As with SID, Paula takes almost 100% of CPU.
+
+The major difference between SID and Paula is that Paula samples are not
+limited to 256 bytes - they can be as long as 65536 bytes (the entire sample
+table) if required. However, the frequency resolution is much more limited.
+There are 256 possible frequencies, corresponding to a frequency resolution of
+64.7Hz divided by the period of one oscillation of the waveform in question.
+For a given waveform, there is better frequency resolution (in terms of
+semitones and cents) at higher octaves than at lower ones. So there are 128
+possible frequencies in the highest octave, 64 at the next lower one and so
+on. To work around this, you may wish to use a technique which is the audio
+equivalent of "mip mapping" - have a copy of each waveform for each octave in
+which it will be played back.
+

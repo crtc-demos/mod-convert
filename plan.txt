@@ -1,0 +1,236 @@
+How many samples do we need to have to avoid boundary problems when resampling periodic
+  coeff_count = coeff_half_len / increment
+  increment = index_inc * src_ratio  (or index_inc depending on whether we're upsampling or downsampling)
+
+
+double_to_fp (input_index * float_increment)/double_to_fp (float_increment)
+
+coeff_half_len = 2464, 22438, 340239
+index_inc = 128, 491, 2381
+cycles = 8, 21, 69
+
+
+
+We have a position (DAT) within n_start
+  We want to convert this to a number of scanlines
+  DELTA = (float)(_modPlayer->_amigaClock/(per))/_modPlayer->f_outputFreq;
+  _amigaClock/per is the number of sample points per second that Paula plays
+  f_outputFreq is the output sample rate
+  So DELTA is the number of sample points moved through in a single output sample
+  So (_modPlayer->_amigaClock/per)/(13125000/(11*76)) is the number of sample points per scanline
+    == 228/per  (because 228 Paula cycles (== colour cycles) per scanline)
+  pos = sample points
+  (228/per) = sample points per scanline
+  pos / (228/per) = scanline = per*pos/228
+  Range is between 108 (==33144Hz) and 907 (==3947Hz)
+    pos 10: per 108 == 1080/228 = scanline 5  228/per = 2.11
+    pos 10: per 907 == scanline 40            228/per = 0.25
+
+
+
+Finish condition:
+  Song position (0..127)   mt_SongPos                                   7
+  Division within pattern  mt_PatternPos                                6
+                           n_loopcount for each channel (4 bits each)  16
+
+  11 Position Jump - mt_SongPos = x, mt_PatternPos = 0
+  13 Pattern Break - ++mt_SongPos, mt_PatternPos = x
+  14/6 Loop Pattern -
+
+  Can't just use mt_SongPos because Pattern Break combined with Position Jump can cause parts of a pattern to be used in two disjoint places in the song
+  Can't use mt_SongPos and mt_PatternPos because then we'd quit as soon as we hit a loop
+  It's possible to make a mod which plays through once but changes some variables each time through (particularly volume) - let's ignore this though
+
+
+
+
+Don't try to elide matching waveforms (yet)
+Data structures:
+  NoteDescriptor: (key) sample number, frequency, amplitude
+  NoteData: position in samples table, start and end byte of sample actually used
+  SongData: array of these forms the song
+    NoteDescriptor
+    Position within sample
+  _notes: mapping from NodeDescriptor to NoteData - holds information about which parts of which notes are used
+  _song: Array of SongData - the actual notes played in order
+
+Go through the song:
+  Compute NoteDescriptor for currently playing note
+  Compute start and end scanlines
+  Add to _notes
+  Add to _song
+
+
+
+
+Note: our player *can't* use CIA timer mode because samplesPerFrame is fixed in the player
+  Only for VIC - SID/Paula can change speed
+
+Output entire waveforms
+Output offsets
+Check for repeating songs
+
+
+Mod converter:
+  Initially:
+    First channel only
+    NN resampling direct to 44100 and 15750
+    VIC only
+    Use repeat and replen, ignore start and len
+    Fix frame rate to 60Hz
+    Resample to ideal rate with enough samples to start wave at any point
+      Start position can be adjusted to get exact frequencies with a jitter of up to 1 sample
+    Don't try to merge duplicate/overlapping waves just yet (except waves that overlap becuase they are part of the same sample)
+    Treat each frequency/amplitude combination as a different wave
+  Start and len for VIC and Paula
+
+  Add config files
+  Arpeggios
+  Render to 1193181Hz and resample to 44100Hz
+    SRC?
+  Convert to VIC
+    Look at q:\reenigne\8088\demo\popcorn\make_table.cpp
+    260x262 byte wave table, 1..76, frequency and amplitude baked
+    song table (2 bytes per 16.69ms)
+  Convert to SID
+    256x256 byte wave table, amplitude baked
+    4 channels at once
+    Use repeat and replen, ignore start and len
+  Convert to Paula
+    65536 bytes of waves total, amplitude baked
+    8 bits of frequency resolution
+    mipmapping to keep frequency between 128 and 255?
+
+Config file options:
+  Output sample rate
+  Bits per sample
+  Channels
+  Amiga clock
+  Tempo mode
+  Output mode
+  PC sample rate
+  PC frame rate
+
+
+frequency = 3546895/(period*replen)
+
+
+https://github.com/proppy/milkymist-pong/blob/master/attic/modsynth-linux/doc/MOD-info
+http://www.aes.id.au/modformat.html
+http://www.sonicspot.com/guide/wavefiles.html
+
+
+
+
+Paula clock PAL =  3546895 = colour carrier * (4/5)
+Paula clock NTSC = 3579545 = colour carrier
+
+DELTA = (float)(3546895/(per))/_modPlayer->f_outputFreq;
+  measured in sample points
+
+per is a value from mt_PeriodTable[] - between 108 and 907
+
+How do we determine if a sample is 1 period or not?
+
+
+
+SID:
+
+l1:
+ times 15 nop
+l2:
+ add bp,9999  mov bx,bp  mov bl,99  mov al,[bx]
+ add si,9999  mov bx,si  mov bl,99  add al,[bx]
+ add di,9999  mov bx,di  mov bl,99  add al,[bx]
+ add dx,9999  mov bx,dx  mov bl,99  add al,[bx]
+ out 0x42,al  ; Output total to speaker
+ loop l1
+ pop bx  pop ax  mov [cs:bx],ax
+ mov cx,9999  ; Count until next patch
+ jmp l2
+
+288 CPU cycles with refresh=18, output sample rate = 16.6kHz, range=1..72 (1..18, 0..18, 0..18, 0..18)
+
+0x8000 = 157500000/11/3/288/2
+0x0001 = 157500000/11/3/288/65536 = 0.2529Hz
+
+Frequency is _modPlayer->_amigaClock/(per*il) in Hz
+
+
+
+
+
+Paula:
+
+l1:
+  times 16 nop
+l2:
+  nop
+  add dl,99  adc si,-1  lodsb
+  add dh,99  adc bp,0  add al,[ds:bp]
+  add ch,99  adc di,0  add al,[di]
+  add cl,99  adc bx,0  add al,[bx]
+  out 0x42,al
+  dec ah
+  jnz l1
+  xchg ax,bx
+  pop bx
+  pop word[cs:bx]
+  xchg ax,bx
+  mov ah,99
+  jmp $+2
+
+There are more limitations on v-instructions (AH needs to be preserved or at least set to 1 and BX needs to be preserved)
+
+
+Each line is one v-instruction, which corresponds to a set of patch instructions (either a single patch or a sequence of instructions to be patched into the NOP area, along with the CX updates required to run it)
+
+  start: inc word[cs:compressedDataPointer]
+  mov es,[cs:compressedDataPointer]
+  mov ax,[es:0x0]  mov [ss:w0+3],al
+  mov ax,[es:0x3]  mov [ss:w1+3],al
+  mov ax,[es:0x6]  mov [ss:w2+3],al
+  mov ax,[es:0x9]  mov [ss:w3+3],al
+  mov ax,[es:0x1]  mov [ss:f0+2],ax
+  mov ax,[es:0x4]  mov [ss:f1+2],ax
+  mov ax,[es:0x7]  mov [ss:f2+2],ax
+  mov ax,[es:0xa]  mov [ss:f3+2],ax
+  w0: waveform0 = xxxx
+  f0: frequency0 = xxxx
+  w1: waveform1 = xxxx
+  f1: frequency1 = xxxx
+  w2: waveform2 = xxxx
+  f2: frequency2 = xxxx
+  w3: waveform3 = xxxx
+  f3: frequency3 = xxxx
+  mov sp,[es:0xc]
+
+Depending on the value of [es:0xc], v-execution then moves on to one of
+several subroutines:
+
+Set CRTC start address:
+  mov ax,[es:0xe]  mov [ss:sa1+7],al
+  mov ax,[es:0xf]  mov [ss:sa2+7],al
+  sa1: mov bx,dx  mov dx,0x3d4  mov ax,0xXX0c  out dx,ax  mov dx,bx
+  sa2: mov bx,dx  mov dx,0x3d4  mov ax,0xXX0d  out dx,ax  mov dx,bx
+  mov sp,start
+
+Output data to screen:
+  inc word[cs:screenUpdate+3]
+  inc word[cs:screenUpdate+3]
+  mov ax,[es:0xe]  mov [ss:screenUpdate+5],ax
+  mov ax,0xb800  mov es,ax
+  screenUpdate: mov [es:xxxx],yyyy
+  mov sp,start
+
+Change screen update position:
+  mov ax,[es:0xe]  mov [ss:screenUpdate+3],ax
+  mov sp,start
+
+Finish:
+  "jmp l2" = "nop nop"
+
+Full
+
+
+Need to make a program which takes as input a text file and generates as output a sequence of
